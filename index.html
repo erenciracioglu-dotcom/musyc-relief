@@ -686,6 +686,7 @@ function activeSlab() { return state.slabs[state.active] || state.slabs[0]; }
 function activeTile() { return state.tiles[state.tile] || state.tiles[0]; }
 function slabById(id) { for (var i = 0; i < state.slabs.length; i++) if (state.slabs[i].id === id) return state.slabs[i]; return null; }
 function dentsOf(tile, slab) { return tile.d[slab.id] || (tile.d[slab.id] = []); }
+var MAXTILES = 96;
 function songLen() { return TILE * state.tiles.length; }
 function newDent(o) {
   return { id: nid(), t: o.t, len: o.len == null ? 1 : o.len, deg: o.deg, acc: o.acc || 0,
@@ -757,7 +758,7 @@ function unpackState(o) {
   st.wet = !!o.wet; st.song = !!o.song; st.free = !!o.free; st.chord = !!o.chord; st.muted = !!o.muted;
   st.kbOct = clamp(Math.round(+o.kbOct || 3), 1, 6);
   st.slabs = o.slabs.slice(0, 8).map(unpackSlab);
-  st.tiles = unpackTiles(o.tiles).slice(0, 24);
+  st.tiles = unpackTiles(o.tiles).slice(0, MAXTILES);
   st.active = clamp(Math.round(+o.active || 0), 0, st.slabs.length - 1);
   st.tile = clamp(Math.round(+o.tile || 0), 0, st.tiles.length - 1);
   var maxId = 99;
@@ -2793,7 +2794,7 @@ function renderShelf() {
     box.appendChild(d); SHELF.tiles.push(d);
   });
   var lump = el('button', 'lump', '+'); lump.type = 'button'; lump.setAttribute('aria-label', 'add an empty tile'); lump.setAttribute('data-tip', 'new tile|a fresh, flat loop at the end of the song');
-  lump.addEventListener('click', function () { if (state.tiles.length >= 24) return; pushUndo(); state.tiles.push({ id: 't' + nid(), d: {} }); setActiveTile(state.tiles.length - 1, true); songChanged({ structure: true }); SHELF.tiles[state.tiles.length - 1].classList.add('pop'); });
+  lump.addEventListener('click', function () { if (state.tiles.length >= MAXTILES) return; pushUndo(); state.tiles.push({ id: 't' + nid(), d: {} }); setActiveTile(state.tiles.length - 1, true); songChanged({ structure: true }); SHELF.tiles[state.tiles.length - 1].classList.add('pop'); });
   box.appendChild(lump);
   if (KILN.fired) {
     box.appendChild(el('span', 'sep'));
@@ -2883,7 +2884,7 @@ function moveTile(from, to) {
   songChanged({ structure: true });
 }
 function splitTile(i) {
-  if (state.tiles.length >= 24) return;
+  if (state.tiles.length >= MAXTILES) return;
   pushUndo();
   var src = state.tiles[i], copy = { id: 't' + nid(), d: {} };
   for (var k in src.d) copy.d[k] = src.d[k].map(function (n) { return cloneDent(n, false); });
@@ -2924,6 +2925,15 @@ function shelfTick() {
     d.classList.toggle('playing', on);
     if (on) { var ph = d.lastChild; ph.style.left = (7 + (ls - ti * TILE) / TILE * (d.clientWidth - 14)) + 'px'; }
   });
+  /* long songs: keep the playing tile in view on the shelf */
+  if (TR.mode === 'playing' && ti !== SHELF.lastTi) {
+    SHELF.lastTi = ti;
+    var box = $('#shelf'), d = SHELF.tiles[ti];
+    if (d && box.scrollWidth > box.clientWidth + 4) {
+      var l = d.getBoundingClientRect().left - box.getBoundingClientRect().left + box.scrollLeft, r = l + d.offsetWidth;
+      if (l < box.scrollLeft + 20 || r > box.scrollLeft + box.clientWidth - 20) box.scrollTo({ left: Math.max(0, l - box.clientWidth * 0.3), behavior: 'smooth' });
+    }
+  }
 }
 
 /* ─── the keyboard ─── */
