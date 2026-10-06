@@ -501,7 +501,7 @@
         </div>
 
         <div class="bench-foot">
-          <span class="hint" id="benchHint"><b>press</b> to dent · <b>drag</b> to hold · <b>drag up/down</b> to slide · <b>hold a dent</b> to lift it · <b>right-drag</b> to smooth</span>
+          <span class="hint" id="benchHint"><b>press</b> to dent · <b>drag</b> to hold · <b>drag up/down</b> to slide · <b>hold a dent</b> to lift it · <b>right-drag</b> to smooth · <b>shift</b> to select many · <b>ctrl-drag</b> to copy</span>
           <div class="zoom">
             <button type="button" class="chip sq" id="zoomOut" aria-label="Zoom out" data-tip="zoom out|all the way out shows the whole song">−</button>
             <output id="zoomRead">tile 1 · 1×</output>
@@ -1868,7 +1868,20 @@ function cpuRender(t) {
 /* ═══════════════ overlay: what sits on top of the clay ═══════════════ */
 var OV = { c: null, x: null, dpr: 1, rows: [], ghostFlash: new Map() };
 var HOVER = { on: false, x: 0, y: 0, hit: null };
-var SEL = { id: null };
+var SEL = { id: null, set: new Set() };
+/* selection: SEL.set holds every chosen dent of the active slab, SEL.id the one last touched */
+function selectOnly(id) { SEL.set.clear(); SEL.id = id; if (id != null) SEL.set.add(id); }
+function selHas(id) { return id != null && (SEL.set.has(id) || SEL.id === id); }
+function selAdd(id) { SEL.set.add(id); SEL.id = id; }
+function selDrop(id) { SEL.set.delete(id); if (SEL.id === id) { SEL.id = null; SEL.set.forEach(function (k) { SEL.id = k; }); } }
+/* every selected dent of the active slab, wherever it sits in the song */
+function selMembers() {
+  var slab = activeSlab(), out = [];
+  if (SEL.id != null) SEL.set.add(SEL.id);
+  if (!SEL.set.size) return out;
+  state.tiles.forEach(function (tile, ti) { (tile.d[slab.id] || []).forEach(function (n) { if (SEL.set.has(n.id)) out.push({ n: n, ti: ti, slab: slab }); }); });
+  return out;
+}
 var KCUR = { on: false, s: 0, p: 0 };
 function ovInit(c) { OV.c = c; OV.x = c.getContext('2d'); }
 function ovResize() {
@@ -1944,8 +1957,14 @@ function ovRender(t) {
   }
   /* selection */
   var hovIt = HOVER.hit && HOVER.hit.it;
-  if (SEL.id != null) {
-    for (var q = 0; q < VIS.length; q++) if (VIS[q].n.id === SEL.id) { drawRing(x, VIS[q], true); break; }
+  if (SEL.id != null || SEL.set.size) {
+    for (var q = 0; q < VIS.length; q++) if (selHas(VIS[q].n.id)) drawRing(x, VIS[q], true);
+  }
+  /* the selection box */
+  if (G && G.mode === 'box') {
+    var bx = Math.min(G.x0, G.x1), by = Math.min(G.y0, G.y1), bw = Math.abs(G.x1 - G.x0), bh = Math.abs(G.y1 - G.y0);
+    x.fillStyle = 'rgba(255,107,90,.07)'; rr(x, bx, by, bw, bh, 8); x.fill();
+    x.lineWidth = 1.4; x.setLineDash([5, 4]); x.strokeStyle = 'rgba(255,107,90,.75)'; rr(x, bx, by, bw, bh, 8); x.stroke(); x.setLineDash([]);
   }
   /* sculpt handles when zoomed in close */
   if (V.span <= 6.5) {
@@ -2070,7 +2089,7 @@ function handleUnder(pt) {
 function removeDent(n, ti, slab) {
   var arr = state.tiles[ti] && state.tiles[ti].d[slab.id]; if (!arr) return;
   var i = arr.indexOf(n); if (i >= 0) arr.splice(i, 1);
-  if (SEL.id === n.id) SEL.id = null;
+  selDrop(n.id);
   rebuildAlive(); touch();
 }
 function settleDent(n, slab, allowOut) {
@@ -2116,6 +2135,7 @@ function onDown(e) {
   }
   var hit = hitDent(pt.x, pt.y);
   if (hit) { startHold(hit, pt, e); return; }
+  if (e.shiftKey) { startBox(pt, e.pointerId); return; }
   startPress(pt, e);
 }
 function startPress(pt, e) {
@@ -2125,7 +2145,7 @@ function startPress(pt, e) {
   var d0 = pen ? clamp(0.25 + e.pressure * 0.85, 0.3, 1) : 0.42;
   pushUndo();
   if (loc.ti !== state.tile) setActiveTile(loc.ti, false);
-  SEL.id = null;
+  selectOnly(null);
   if (slab.kind === 'drum') {
     G = { mode: 'paint', pid: e.pointerId, x0: pt.x, y0: pt.y, t0: nowS(), d0: 0.62, moved: false, dents: [], cells: {}, pen: pen };
     paintAt(pt, true);
@@ -2207,7 +2227,7 @@ function settlePress() {
   var g = G, slab = activeSlab();
   g.voices.forEach(function (v) { if (v) v.release(); });
   g.dents.forEach(function (n) { settleDent(n, slab, g.out); });
-  if (g.dents[0]) { rippleAtDent(g.dents[0], slab, g.ti, 0.55 * g.dents[0].d); SEL.id = g.dents[0].id; announce('dent ' + midiName(dentMidi(g.dents[0], slab, false))); }
+  if (g.dents[0]) { rippleAtDent(g.dents[0], slab, g.ti, 0.55 * g.dents[0].d); selectOnly(g.dents[0].id); announce('dent ' + midiName(dentMidi(g.dents[0], slab, false))); }
   songChanged();
 }
 
@@ -2229,53 +2249,77 @@ function paintAt(pt, first) {
 }
 function endPaint() {
   if (!G.dents.length) { dropUndo(); return; }
-  SEL.id = G.dents[G.dents.length - 1].id;
+  selectOnly(G.dents[G.dents.length - 1].id);
   songChanged();
 }
 
 /* ─── existing dents: tap, lift and move, stretch ─── */
 function startHold(hit, pt, e) {
-  var it = hit.it, n = it.n, slab = it.slab;
-  if (hit.nearEnd) { G = { mode: 'resize', pid: e.pointerId, x0: pt.x, y0: pt.y, it: it, n: n, ti: it.ti, undo: false }; SEL.id = n.id; return; }
+  var it = hit.it, n = it.n, slab = it.slab, shift = e.shiftKey, copy = e.ctrlKey || e.metaKey;
+  if (hit.nearEnd && !shift && !copy) { G = { mode: 'resize', pid: e.pointerId, x0: pt.x, y0: pt.y, it: it, n: n, ti: it.ti, undo: false }; selectOnly(n.id); return; }
+  var was = selHas(n.id);
+  if (shift) selAdd(n.id);            // shift: add to the handful (a tap takes it back out)
+  else if (!was) selectOnly(n.id);    // plain: a new dent starts a new handful
+  else SEL.id = n.id;                 // plain on a chosen dent: keep the handful, grab them all
   G = { mode: 'hold', pid: e.pointerId, x0: pt.x, y0: pt.y, t0: nowS(), it: it, n: n, ti: it.ti, lifted: false, voice: null,
     offS: px2song(pt.x) - (it.ti * TILE + warp(n.t)), offP: py2p(pt.y) - dentPitch(n, slab, false),
-    wasOut: slab.kind !== 'drum' && isOutKey(n), undo: false };
-  SEL.id = n.id;
+    wasOut: slab.kind !== 'drum' && isOutKey(n), undo: false, shift: shift, toggleOff: shift && was, copy: copy };
 }
 function liftHeld() {
   var g = G, slab = g.it.slab;
-  g.lifted = true; DRAG.ids.clear(); DRAG.ids.add(g.n.id); DRAG.lift = 1;
+  g.lifted = true; DRAG.ids.clear(); selMembers().forEach(function (m) { DRAG.ids.add(m.n.id); }); DRAG.ids.add(g.n.id); DRAG.lift = 1;
   if (slab.kind === 'drum') hitPreview(slab, g.n);
   else g.voice = previewVoice(slab, dentMidi(g.n, slab, false), g.n.d, g.n.tool);
   g.lastSemi = slab.kind === 'drum' ? Math.round(g.n.deg) : Math.round(exactPitch(g.n, false));
   touch();
 }
+function memberPitch(m, end) { return m.slab.kind === 'drum' ? m.n.deg : exactPitch(m.n, end); }
 function startMove(pt) {
   var g = G; if (!g.undo) { pushUndo(); g.undo = true; }
   g.mode = 'move'; if (!g.lifted) liftHeld();
+  var mem = selMembers(), slab = g.it.slab;
+  if (!mem.some(function (m) { return m.n === g.n; })) mem.push({ n: g.n, ti: g.ti, slab: slab });
+  if (g.copy) {   // ctrl-drag: leave the originals where they are and carry fresh copies
+    SEL.set.clear();
+    mem.forEach(function (m) {
+      var c = cloneDent(m.n); dentsOf(state.tiles[m.ti], slab).push(c);
+      if (m.n === g.n) g.n = c;
+      m.n = c; SEL.set.add(c.id);
+    });
+    SEL.id = g.n.id; rebuildAlive();
+    g.label = null; announce(mem.length > 1 ? mem.length + ' dents copied' : 'dent copied');
+  }
+  mem.forEach(function (m) { m.s0 = m.ti * TILE + warp(m.n.t); m.p0 = memberPitch(m, false); m.p1 = m.n.deg2 != null ? memberPitch(m, true) : m.p0; m.wasOut = slab.kind !== 'drum' && isOutKey(m.n); if (m.n === g.n) g.anchor = m; });
+  g.mem = mem;
+  DRAG.ids.clear(); mem.forEach(function (m) { DRAG.ids.add(m.n.id); }); DRAG.lift = 1;
   FB.classList.add('grab'); dragMove(pt);
 }
 function dragMove(pt) {
-  var g = G, slab = g.it.slab, n = g.n, L = songLen();
-  var s = clamp(px2song(pt.x) - g.offS, 0, L - 0.01), p = py2p(pt.y) - g.offP;
-  var ti = clamp(Math.floor(s / TILE), 0, state.tiles.length - 1);
-  if (ti !== g.ti) {
-    var from = dentsOf(state.tiles[g.ti], slab), i = from.indexOf(n); if (i >= 0) from.splice(i, 1);
-    dentsOf(state.tiles[ti], slab).push(n); g.ti = ti; g.it.ti = ti;
-  }
-  n.t = clamp(unwarp(s - ti * TILE), 0, TILE - 0.01);
-  if (n.t + n.len > TILE) n.t = Math.max(0, TILE - n.len);
-  if (slab.kind === 'drum') {
-    n.deg = clamp(p, -0.4, 5.4);
+  var g = G, slab = g.it.slab, n = g.n, L = songLen(), a = g.anchor, mem = g.mem, drum = slab.kind === 'drum';
+  var sMin = 1e9, sMax = -1e9, pMin = 1e9, pMax = -1e9;
+  mem.forEach(function (m) { sMin = Math.min(sMin, m.s0); sMax = Math.max(sMax, m.s0); pMin = Math.min(pMin, m.p0, m.p1); pMax = Math.max(pMax, m.p0, m.p1); });
+  var ds = clamp(px2song(pt.x) - g.offS - a.s0, -sMin, L - 0.01 - sMax);
+  var top = drum ? 5.4 : 24.4, dp = clamp(py2p(pt.y) - g.offP - a.p0, -0.4 - pMin, top - pMax);
+  mem.forEach(function (m) {
+    var s = m.s0 + ds, ti = clamp(Math.floor(s / TILE), 0, state.tiles.length - 1), d = m.n;
+    if (ti !== m.ti) {
+      var from = dentsOf(state.tiles[m.ti], slab), i = from.indexOf(d); if (i >= 0) from.splice(i, 1);
+      dentsOf(state.tiles[ti], slab).push(d); m.ti = ti;
+    }
+    d.t = clamp(unwarp(s - ti * TILE), 0, TILE - 0.01);
+    if (d.t + d.len > TILE) d.t = Math.max(0, TILE - d.len);
+    if (drum) d.deg = m.p0 + dp;
+    else { setDentPitch(d, m.p0 + dp, false); if (d.deg2 != null) setDentPitch(d, m.p1 + dp, true); }
+  });
+  g.ti = a.ti; g.it.ti = a.ti;
+  var many = mem.length > 1 ? ' · ' + mem.length + ' dents' : '';
+  if (drum) {
     var row = clamp(Math.round(n.deg), 0, 5); if (row !== g.lastSemi) { g.lastSemi = row; hitPreview(slab, { deg: row, d: n.d, tool: n.tool }); }
-    g.label = DRUM_ROWS[row] + ' · step ' + (Math.round(n.t) + 1);
+    g.label = DRUM_ROWS[row] + ' · step ' + (Math.round(n.t) + 1) + many;
   } else {
-    var p0 = exactPitch(n, false), np = clamp(p, -0.4, 24.4), delta = np - p0;
-    setDentPitch(n, np, false);
-    if (n.deg2 != null) setDentPitch(n, clamp(exactPitch(n, true) + delta, -0.4, 24.4), true);
-    var sn = snapSemi(np, g.wasOut);
+    var sn = snapSemi(exactPitch(n, false), g.wasOut);
     if (sn !== g.lastSemi) { g.lastSemi = sn; if (g.voice) g.voice.setMidi(semiMidi(slab, sn)); }
-    g.label = midiName(semiMidi(slab, sn)) + ' · step ' + (Math.round(n.t) + 1);
+    g.label = (g.copy ? 'copy · ' : '') + midiName(semiMidi(slab, sn)) + ' · step ' + (Math.round(n.t) + 1) + many;
   }
   g.lx = pt.x + 16; g.ly = pt.y - 22;
   touch();
@@ -2284,18 +2328,46 @@ function endHoldOrMove() {
   var g = G, slab = g.it.slab, n = g.n;
   if (g.voice) g.voice.release();
   if (g.mode === 'move') {
-    settleDent(n, slab, g.wasOut);
+    g.mem.forEach(function (m) { settleDent(m.n, slab, m.wasOut); });
     rippleAtDent(n, slab, g.ti, 0.7 * n.d);
     songChanged(); return;
   }
   if (g.lifted) { touch(); return; }
+  if (g.shift) { if (g.toggleOff) selDrop(n.id); touch(); hitPreview(slab, n); return; }
   var t = nowS();
   if (TAP.id === n.id && t - TAP.t < 0.34) {
     pushUndo(); removeDent(n, g.ti, slab); TAP.id = null; songChanged(); announce('smoothed'); return;
   }
+  if (!g.copy && SEL.set.size > 1) selectOnly(n.id);   // a plain tap narrows the handful back to one
   TAP.id = n.id; TAP.t = t;
   hitPreview(slab, n);
   rippleAtDent(n, slab, g.ti, 0.35);
+}
+
+/* ─── shift-drag on bare clay: draw a box around dents ─── */
+function startBox(pt, pid) { G = { mode: 'box', pid: pid, x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y, base: new Set(SEL.set) }; if (SEL.id != null) G.base.add(SEL.id); }
+function dragBox(pt) {
+  var g = G; g.x1 = pt.x; g.y1 = pt.y;
+  var X0 = Math.min(g.x0, g.x1), X1 = Math.max(g.x0, g.x1), Y0 = Math.min(g.y0, g.y1), Y1 = Math.max(g.y0, g.y1), last = null;
+  SEL.set = new Set(g.base);
+  for (var k = 0; k < VIS.length; k++) {
+    var it = VIS[k], ex = it.e.x, drum = it.slab.kind === 'drum', xs = sx(ex[0]), xe = drum ? xs : sx(ex[1]), inside = false;
+    for (var i = 0; i <= 8 && !inside; i++) { var px = xs + (xe - xs) * i / 8, py = drum ? sy(ex[2]) : centerY(ex, px, xs, xe); inside = px >= X0 && px <= X1 && py >= Y0 && py <= Y1; }
+    if (inside) { SEL.set.add(it.n.id); last = it.n.id; }
+  }
+  SEL.id = last != null ? last : (g.base.size ? SEL.id : null);
+  g.label = SEL.set.size ? SEL.set.size + ' selected' : null; g.lx = pt.x + 14; g.ly = pt.y - 18;
+  markDirty();
+}
+function endBox() { if (SEL.set.size) announce(SEL.set.size + ' dents selected'); markDirty(); }
+function selectAllActive() {
+  var slab = activeSlab(); SEL.set.clear(); SEL.id = null;
+  state.tiles.forEach(function (t) { (t.d[slab.id] || []).forEach(function (n) { SEL.set.add(n.id); SEL.id = n.id; }); });
+  announce(SEL.set.size + ' dents selected'); markDirty();
+}
+function deleteSelection() {
+  var mem = selMembers(); if (!mem.length) return;
+  pushUndo(); mem.forEach(function (m) { removeDent(m.n, m.ti, m.slab); }); selectOnly(null); songChanged(); announce(mem.length > 1 ? mem.length + ' dents smoothed' : 'smoothed');
 }
 function dragResize(pt) {
   var g = G, n = g.n, base = g.ti * TILE, slab = g.it.slab;
@@ -2315,7 +2387,7 @@ function endResize() {
 function startSculpt(it, k, pt, pid) {
   pushUndo();
   G = { mode: 'sculpt', pid: pid, it: it, n: it.n, handle: k, x0: pt.x, y0: pt.y, d0: it.n.d };
-  SEL.id = it.n.id;
+  selectOnly(it.n.id);
 }
 function dragSculpt(pt) {
   var g = G, n = g.n, slab = g.it.slab, sd = stepDur(), pxs = V.w / V.span;
@@ -2379,6 +2451,7 @@ function onMove(e) {
     case 'hold': if (dist > 4) startMove(pt); break;
     case 'move': dragMove(pt); break;
     case 'resize': dragResize(pt); break;
+    case 'box': dragBox(pt); break;
     case 'sculpt': dragSculpt(pt); break;
   }
 }
@@ -2394,6 +2467,7 @@ function onUp(e) {
     case 'paint': endPaint(); break;
     case 'hold': case 'move': endHoldOrMove(); break;
     case 'resize': endResize(); break;
+    case 'box': endBox(); break;
     case 'sculpt': endSculpt(); break;
     case 'smooth': if (g.undo) songChanged(); break;
   }
@@ -2444,11 +2518,12 @@ function onFieldKey(e) {
   e.preventDefault();
   if (!KCUR.on) { KCUR.on = true; KCUR.s = clamp(Math.floor(V.x0 + V.span * 0.25), 0, songLen() - 1); KCUR.p = drum ? 0 : 0; }
   var selIt = null; if (SEL.id != null) for (var i = 0; i < VIS.length; i++) if (VIS[i].n.id === SEL.id) selIt = VIS[i];
-  if ((k === 'ArrowLeft' || k === 'ArrowRight') && e.shiftKey && selIt) { pushUndo(); selIt.n.t = clamp(selIt.n.t + (k === 'ArrowLeft' ? -1 : 1), 0, TILE - selIt.n.len); hitPreview(slab, selIt.n); songChanged(); return; }
-  if ((k === 'ArrowUp' || k === 'ArrowDown') && e.shiftKey && selIt) {
+  var mem = e.shiftKey && k.indexOf('Arrow') === 0 ? selMembers() : [];
+  if ((k === 'ArrowLeft' || k === 'ArrowRight') && mem.length) { pushUndo(); mem.forEach(function (m) { m.n.t = clamp(m.n.t + (k === 'ArrowLeft' ? -1 : 1), 0, TILE - m.n.len); }); hitPreview(slab, (selIt || mem[0]).n); songChanged(); return; }
+  if ((k === 'ArrowUp' || k === 'ArrowDown') && mem.length) {
     pushUndo(); var up = k === 'ArrowUp' ? 1 : -1;
-    if (drum) selIt.n.deg = clamp(selIt.n.deg + up, 0, 5); else { selIt.n.deg = clamp(selIt.n.deg + up, -2, 16); if (selIt.n.deg2 != null) selIt.n.deg2 += up; }
-    hitPreview(slab, selIt.n); songChanged(); return;
+    mem.forEach(function (m) { var n2 = m.n; if (drum) n2.deg = clamp(n2.deg + up, 0, 5); else { n2.deg = clamp(n2.deg + up, -2, 16); if (n2.deg2 != null) n2.deg2 += up; } });
+    hitPreview(slab, (selIt || mem[0]).n); songChanged(); return;
   }
   if (k === 'ArrowLeft') KCUR.s = clamp(KCUR.s - 1, 0, songLen() - 1);
   else if (k === 'ArrowRight') KCUR.s = clamp(KCUR.s + 1, 0, songLen() - 1);
@@ -2464,16 +2539,17 @@ function onFieldKey(e) {
     if (found) { removeDent(found, ti, slab); announce('smoothed'); }
     else {
       var da2 = drum ? { deg: KCUR.p, acc: 0 } : semisToDegAcc(KCUR.p), nn = newDent({ t: t, len: 1, deg: da2.deg, acc: da2.acc, d: 0.7, tool: slab.tool });
-      arr.push(nn); SEL.id = nn.id; hitPreview(slab, nn); rippleAtDent(nn, slab, ti, 0.5);
+      arr.push(nn); selectOnly(nn.id); hitPreview(slab, nn); rippleAtDent(nn, slab, ti, 0.5);
       announce((drum ? DRUM_ROWS[KCUR.p] : midiName(semiMidi(slab, KCUR.p))) + ' at step ' + (t + 1));
     }
     if (ti !== state.tile) setActiveTile(ti, false);
     songChanged();
   } else if (k === 'Delete' || k === 'Backspace') {
-    if (selIt) { pushUndo(); removeDent(selIt.n, selIt.ti, slab); songChanged(); announce('smoothed'); }
+    deleteSelection();
   } else if (k === '+' || k === '=') viewZoom(1.35);
   else if (k === '-' || k === '_') viewZoom(1 / 1.35);
-  else if (k === '0' || k === 'Escape') { SEL.id = null; viewHome(false); }
+  else if (k === 'Escape' && (SEL.set.size > 1)) { selectOnly(null); markDirty(); }
+  else if (k === '0' || k === 'Escape') { selectOnly(null); viewHome(false); }
   if (KCUR.s < V.tx0 || KCUR.s >= V.tx0 + V.tspan) { V.tx0 = clamp(KCUR.s - V.tspan / 2, 0, songLen() - V.tspan); V.anim = true; }
 }
 
@@ -2624,7 +2700,7 @@ function slabSwitched(old) {
   V.tp0 = V.p0 = Rn.lo; V.tpspan = V.pspan = Rn.hi - Rn.lo;
   if (old.kind !== nw.kind) HM.blend = 0;
   HM.statDirty = HM.textDirty = true;
-  SEL.id = null;
+  selectOnly(null);
   rebuildAlive(); refreshSlabs(); refreshKnobs(true); refreshTools(); KB.relabel(); refreshHint();
   markDirty(); SCR.dirty = true; save();
 }
@@ -3392,7 +3468,7 @@ function songChanged(o) {
 function applyState(st, animate) {
   state = st;
   scaleAnim = SCALES[state.mood].slice(); SCALE_ANIM = null;
-  DA.clear(); DYING.length = 0; RISE_ALL = true; SEL.id = null;
+  DA.clear(); DYING.length = 0; RISE_ALL = true; selectOnly(null);
   syncTracks(); if (AE.g) AE.g.out.gain.setTargetAtTime(state.muted ? 0 : 1, AE.ctx.currentTime, 0.03);
   setEchoTime();
   var R = fullRange(activeSlab()); V.p0 = V.tp0 = R.lo; V.pspan = V.tpspan = R.hi - R.lo;
@@ -3405,8 +3481,8 @@ function applyState(st, animate) {
 function refreshBenchHint() {
   var h = $('#benchHint'); if (!h) return;
   h.innerHTML = activeSlab().kind === 'drum'
-    ? '<b>press</b> a cup into a row · <b>drag</b> to paint more · <b>hold a cup</b> to lift it · <b>right-drag</b> or <b>double-tap</b> to smooth'
-    : '<b>press</b> to dent · <b>drag</b> to hold · <b>drag up/down</b> to slide · <b>hold a dent</b> to lift it · <b>right-drag</b> or <b>double-tap</b> to smooth';
+    ? '<b>press</b> a cup into a row · <b>drag</b> to paint more · <b>hold a cup</b> to lift it · <b>right-drag</b> or <b>double-tap</b> to smooth · <b>shift</b> to select many · <b>ctrl-drag</b> to copy'
+    : '<b>press</b> to dent · <b>drag</b> to hold · <b>drag up/down</b> to slide · <b>hold a dent</b> to lift it · <b>right-drag</b> or <b>double-tap</b> to smooth · <b>shift</b> to select many · <b>ctrl-drag</b> to copy';
 }
 
 /* ─── the light reaches a dent ─── */
@@ -3614,12 +3690,12 @@ function keysInit() {
     var k = e.key, lk = k && k.length === 1 ? k.toLowerCase() : k;
     if ((e.ctrlKey || e.metaKey) && lk === 'z') { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
     if ((e.ctrlKey || e.metaKey) && lk === 'y') { e.preventDefault(); redo(); return; }
+    if ((e.ctrlKey || e.metaKey) && lk === 'a' && !(tg && tg.isContentEditable)) { e.preventDefault(); selectAllActive(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (k === ' ' || e.code === 'Space') { e.preventDefault(); if (e.repeat) return; audioUnlock(); if (e.shiftKey) trPlay(true); else trToggle(); return; }
     if (k === 'Escape') { closeTray(); return; }
-    if ((k === 'Delete' || k === 'Backspace') && tg !== FB && SEL.id != null) {
-      for (var i = 0; i < VIS.length; i++) if (VIS[i].n.id === SEL.id) { e.preventDefault(); pushUndo(); removeDent(VIS[i].n, VIS[i].ti, VIS[i].slab); songChanged(); break; }
-      return;
+    if ((k === 'Delete' || k === 'Backspace') && tg !== FB && (SEL.id != null || SEL.set.size)) {
+      e.preventDefault(); deleteSelection(); return;
     }
     if (KEYMAP[lk] != null || lk === 'z' || lk === 'x') {
       if (tg && tg.closest && tg.closest('.kwheel,.knob,.wheel')) { /* still play */ }
@@ -3725,7 +3801,7 @@ function init() {
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { HM.textDirty = true; markDirty(); SCR.dirty = true; });
   requestAnimationFrame(frame);
 }
-try { if (/[?&]debug\b/.test(location.search)) window.__relief = { st: function () { return state; }, TR: TR, V: V, HM: HM, VIS: VIS, AE: AE, KILN: KILN, G: function () { return G; }, DA: DA, UNDO: UNDO, perf: function (n) { n = n || 20; var a = performance.now(); for (var i = 0; i < n; i++) { buildDents(); compose(); } var b = performance.now(); for (var k = 0; k < 5; k++) buildStatic(); var c = performance.now(); for (var m = 0; m < 5; m++) buildText(); var d = performance.now(); return { dentsCompose: (b - a) / n, stat: (c - b) / 5, text: (d - c) / 5, hm: [HM.w, HM.h], vis: VIS.length }; } }; } catch (e) {}
+try { if (/[?&]debug\b/.test(location.search)) window.__relief = { st: function () { return state; }, SEL: SEL, sx: function (v) { return sx(v); }, sy: function (v) { return sy(v); }, TR: TR, V: V, HM: HM, VIS: VIS, AE: AE, KILN: KILN, G: function () { return G; }, DA: DA, UNDO: UNDO, perf: function (n) { n = n || 20; var a = performance.now(); for (var i = 0; i < n; i++) { buildDents(); compose(); } var b = performance.now(); for (var k = 0; k < 5; k++) buildStatic(); var c = performance.now(); for (var m = 0; m < 5; m++) buildText(); var d = performance.now(); return { dentsCompose: (b - a) / n, stat: (c - b) / 5, text: (d - c) / 5, hm: [HM.w, HM.h], vis: VIS.length }; } }; } catch (e) {}
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
 
 })();
