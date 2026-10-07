@@ -248,6 +248,10 @@
   .play[aria-pressed="true"]{color:var(--coral)}
   .play[aria-pressed="true"] .pl{display:none}
   .play[aria-pressed="true"] .pz{display:inline}
+  /* before the sound has woken: the play button breathes so a silent walking light never reads as "broken" */
+  .play.wake{color:var(--coral)}
+  .play.wake::after{content:"";position:absolute;inset:-5px;border-radius:50%;pointer-events:none;border:2px solid var(--coral);opacity:0;animation:wake 1.8s ease-out infinite}
+  @keyframes wake{0%{opacity:.75;transform:scale(.9)}100%{opacity:0;transform:scale(1.25)}}
   .trough{flex:1 1 120px;min-width:96px;display:flex;flex-direction:column;gap:9px}
   .trough.lean{flex:.8 1 96px}
   .trough-head{display:flex;justify-content:space-between;align-items:baseline}
@@ -415,6 +419,7 @@
     .tools{padding:5px;gap:5px}
   }
   @media (prefers-reduced-motion:reduce){
+    .play.wake::after{animation:none;opacity:.6;transform:none}
     .device{animation:none}
     .cap,.kstrip,.tile,.tray{transition:none;animation:none}
     .device.kiln .grille,.device.kiln .led{animation:none}
@@ -3528,7 +3533,7 @@ function hudTick(t) {
   var key, b, txt;
   if (HUD.msg && t - HUD.msgT < 2.8) { key = 'm:' + HUD.msg; b = '◦'; txt = HUD.msg; }
   else if (HUD.note && t - HUD.noteT < 1.4) { key = 'n:' + HUD.note + HUD.sub; b = HUD.note; txt = HUD.sub; }
-  else if (!AE.ready) { key = 'wake'; b = '◦'; txt = HM.hintT ? 'press into the clay' : 'touch the clay to wake the sound'; }
+  else if (!AE.ready) { key = 'wake'; b = '◦'; txt = HM.hintT ? 'press into the clay' : 'press play to hear it'; }
   else if (HM.hintT) { key = 'press'; b = '◦'; txt = activeSlab().kind === 'drum' ? 'press a beat into the pebbles' : 'press into the clay'; }
   else { key = 'slab'; b = '◦'; txt = activeSlab().name + ' slab'; }
   if (HUD.cache.note !== key) {
@@ -3541,6 +3546,7 @@ function hudTick(t) {
   setText('hClay', state.wet ? 'wet' : 'fired');
   var live = TR.mode === 'playing' && TR.clock === 'audio';
   if (HUD.cache.live !== live) { HUD.cache.live = live; $('#liveDot').classList.toggle('live', live); }
+  if (HUD.cache.wake !== !AE.ready) { HUD.cache.wake = !AE.ready; $('#playBtn').classList.toggle('wake', !AE.ready); }
   var led = AE.ready && !state.muted;
   if (HUD.cache.led !== led) { HUD.cache.led = led; $('#powerLed').classList.toggle('on', led); }
 }
@@ -3692,7 +3698,7 @@ function keysInit() {
     if ((e.ctrlKey || e.metaKey) && lk === 'y') { e.preventDefault(); redo(); return; }
     if ((e.ctrlKey || e.metaKey) && lk === 'a' && !(tg && tg.isContentEditable)) { e.preventDefault(); selectAllActive(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (k === ' ' || e.code === 'Space') { e.preventDefault(); if (e.repeat) return; audioUnlock(); if (e.shiftKey) trPlay(true); else trToggle(); return; }
+    if (k === ' ' || e.code === 'Space') { e.preventDefault(); if (e.repeat) return; var was = TR.mode; audioUnlock(); if (e.shiftKey) trPlay(true); else if (was === 'playing') trPause(); else trPlay(was === 'idle'); return; }
     if (k === 'Escape') { closeTray(); return; }
     if ((k === 'Delete' || k === 'Backspace') && tg !== FB && (SEL.id != null || SEL.set.size)) {
       e.preventDefault(); deleteSelection(); return;
@@ -3753,7 +3759,13 @@ function wire() {
   $('#sprinkleBtn').addEventListener('click', sprinkle);
   $('#erodeBtn').addEventListener('click', erode);
   $('#clearBtn').addEventListener('click', clearSlab);
-  $('#playBtn').addEventListener('click', function () { trToggle(); });
+  $('#playBtn').addEventListener('click', function () { var was = TR.mode; if (was === 'playing') trPause(); else trPlay(was === 'idle'); });
+  /* the first touch anywhere on the instrument (not a button) wakes the sound, so the walking light is never silent */
+  document.addEventListener('pointerdown', function (e) {
+    if (AE.ready || KILN.busy) return;
+    if (e.target && e.target.closest && e.target.closest('button,input,label,select,a,.tray')) return;
+    audioUnlock();
+  }, true);
   $('#playBtn').addEventListener('dblclick', function () { trPlay(true); });
   $('#tempo').addEventListener('input', function (e) { trSetBpm(+e.target.value); refreshTransport(); markDirty(); SCR.dirty = true; save(); });
   $('#lean').addEventListener('input', function (e) { state.lean = +e.target.value / 100; TR.evDirty = true; HM.statDirty = true; markDirty(); SCR.dirty = true; SHELF.dirty = true; refreshTransport(); save(); });
@@ -3785,7 +3797,7 @@ function frame() {
   requestAnimationFrame(frame);
 }
 function init() {
-  var st = loadLocal(); if (st) state = st;
+  var st = loadLocal(); state = st || demoSong();   // first visit opens with the demo pressed in
   scaleAnim = SCALES[state.mood].slice();
   makeGrain();
   buildKnobs(); buildKeyDial(); buildKeyboard(); tipInit(); fieldInit(); scrInit(); kilnInit(); keysInit(); wire();
